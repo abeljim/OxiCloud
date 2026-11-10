@@ -284,3 +284,92 @@ it('shows no stepping for a non-media file, or when the host does not handle it'
 	expect(screen.queryByTestId('file-viewer-prev-btn')).toBeNull();
 	expect(screen.queryByTestId('file-viewer-next-btn')).toBeNull();
 });
+
+// Fullscreen takes the viewer's panel, not the page, so the previous / next
+// controls come along and stepping keeps working. jsdom has no Fullscreen
+// API, so these stub the part of it the viewer uses.
+function stubFullscreen() {
+	let current: Element | null = null;
+	const enter = (el: Element) => {
+		current = el;
+		document.dispatchEvent(new Event('fullscreenchange'));
+		return Promise.resolve();
+	};
+	const request = vi.fn(function (this: Element) {
+		return enter(this);
+	});
+	const exit = vi.fn(() => {
+		current = null;
+		document.dispatchEvent(new Event('fullscreenchange'));
+		return Promise.resolve();
+	});
+	Object.defineProperty(document, 'fullscreenEnabled', { configurable: true, value: true });
+	Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => current });
+	Object.defineProperty(document, 'exitFullscreen', { configurable: true, value: exit });
+	Object.defineProperty(HTMLElement.prototype, 'requestFullscreen', {
+		configurable: true,
+		value: request
+	});
+	return {
+		request,
+		exit,
+		restore() {
+			for (const key of ['fullscreenEnabled', 'fullscreenElement', 'exitFullscreen'] as const) {
+				delete (document as unknown as Record<string, unknown>)[key];
+			}
+			delete (HTMLElement.prototype as unknown as Record<string, unknown>).requestFullscreen;
+		}
+	};
+}
+
+it('goes fullscreen with the previous / next controls, and keeps stepping there', async () => {
+	const fs = stubFullscreen();
+	const files = folder();
+	const onnavigate = vi.fn();
+	render(FileViewer, { props: { open: true, file: files[2], files, onnavigate } });
+	await screen.findByTestId('file-viewer-dialog');
+
+	const toggle = screen.getByTestId('file-viewer-fullscreen-btn');
+	expect(toggle.getAttribute('aria-pressed')).toBe('false');
+	await fireEvent.click(toggle);
+	const target = fs.request.mock.contexts[0] as HTMLElement;
+	expect(target.contains(screen.getByTestId('file-viewer-next-btn'))).toBe(true);
+	expect(target.contains(toggle)).toBe(true);
+	await waitFor(() => expect(toggle.getAttribute('aria-pressed')).toBe('true'));
+
+	await fireEvent.keyDown(window, { key: 'ArrowRight' });
+	expect(onnavigate).toHaveBeenLastCalledWith(files[3]);
+	// Escape is the browser's way out of fullscreen; it must not also close.
+	await fireEvent.keyDown(window, { key: 'Escape' });
+	expect(screen.getByTestId('file-viewer-dialog')).toBeTruthy();
+
+	await fireEvent.click(toggle);
+	expect(fs.exit).toHaveBeenCalled();
+	await waitFor(() => expect(toggle.getAttribute('aria-pressed')).toBe('false'));
+	fs.restore();
+});
+
+it('offers no fullscreen where the browser cannot do it', async () => {
+	render(FileViewer, { props: { open: true, file: file() } });
+	await screen.findByTestId('file-viewer-dialog');
+	expect(screen.queryByTestId('file-viewer-fullscreen-btn')).toBeNull();
+});
+
+it('shows previous / next while the pointer moves, and fades them once it rests', async () => {
+	vi.useFakeTimers();
+	const files = folder();
+	render(FileViewer, { props: { open: true, file: files[2], files, onnavigate: vi.fn() } });
+	const next = await screen.findByTestId('file-viewer-next-btn');
+	const panel = next.parentElement!;
+	expect(panel.classList.contains('fv__panel--nav')).toBe(false);
+
+	await fireEvent.pointerMove(panel);
+	expect(panel.classList.contains('fv__panel--nav')).toBe(true);
+	await vi.advanceTimersByTimeAsync(2100);
+	expect(panel.classList.contains('fv__panel--nav')).toBe(false);
+
+	await fireEvent.pointerMove(panel);
+	await fireEvent.pointerLeave(panel);
+	expect(panel.classList.contains('fv__panel--nav')).toBe(false);
+	vi.useRealTimers();
+});

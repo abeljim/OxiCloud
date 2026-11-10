@@ -188,7 +188,43 @@
 			(kindOf(file) === 'text' || TEXTY_EXT_RE.test(file.name))
 	);
 
+	/** The panel goes fullscreen rather than the page or the <img>: the
+	 *  toolbar and the previous / next controls live in it, so they come
+	 *  along, and stepping keeps the next image fullscreen too. */
+	let panel = $state<HTMLElement | null>(null);
+	let fullscreen = $state(false);
+	/** False where only <video> may go fullscreen, as on iPhone Safari. */
+	const canFullscreen = typeof document !== 'undefined' && document.fullscreenEnabled === true;
+
+	$effect(() => {
+		const sync = () => (fullscreen = !!panel && document.fullscreenElement === panel);
+		document.addEventListener('fullscreenchange', sync);
+		return () => document.removeEventListener('fullscreenchange', sync);
+	});
+
+	function toggleFullscreen() {
+		if (document.fullscreenElement) void document.exitFullscreen();
+		else void panel?.requestFullscreen();
+	}
+
+	/** Previous / next sit over the image, so they show while the pointer
+	 *  moves over the viewer and fade once it rests — fullscreen included,
+	 *  where the pointer never leaves. */
+	let navShown = $state(false);
+	let navTimer: ReturnType<typeof setTimeout> | undefined;
+	function showNav() {
+		navShown = true;
+		clearTimeout(navTimer);
+		navTimer = setTimeout(() => (navShown = false), 2000);
+	}
+	function hideNav() {
+		clearTimeout(navTimer);
+		navShown = false;
+	}
+	$effect(() => () => clearTimeout(navTimer));
+
 	function close() {
+		if (fullscreen) void document.exitFullscreen();
 		open = false;
 		textContent = '';
 		zoom = 1;
@@ -210,8 +246,11 @@
 
 	function onKeydown(e: KeyboardEvent) {
 		if (!open || wopiOpen) return;
-		if (e.key === 'Escape') close();
-		else if (e.key === 'ArrowLeft' && prevFile && !arrowsTaken(e)) onnavigate?.(prevFile);
+		// In fullscreen, Escape belongs to the browser: it leaves fullscreen,
+		// and closing the viewer too would take two steps back at once.
+		if (e.key === 'Escape') {
+			if (!fullscreen) close();
+		} else if (e.key === 'ArrowLeft' && prevFile && !arrowsTaken(e)) onnavigate?.(prevFile);
 		else if (e.key === 'ArrowRight' && nextFile && !arrowsTaken(e)) onnavigate?.(nextFile);
 	}
 
@@ -307,7 +346,17 @@
 		tabindex="-1"
 		onclick={(e) => e.target === e.currentTarget && close()}
 	>
-		<div class="fv__panel" class:fv__panel--collab={collabForFile && collabFullscreen}>
+		<!-- The pointer handlers only reveal previous / next, which are
+		     buttons a keyboard reaches (and reveals) on its own. -->
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="fv__panel"
+			class:fv__panel--collab={collabForFile && collabFullscreen}
+			class:fv__panel--nav={navShown}
+			bind:this={panel}
+			onpointermove={showNav}
+			onpointerleave={hideNav}
+		>
 			<header class="fv__bar">
 				<span class="fv__title">{file.name}</span>
 				<div class="fv__actions">
@@ -333,7 +382,7 @@
 									aria-label={t('viewer.zoom_reset', 'Reset zoom')}
 									onclick={resetZoom}
 								>
-									<Icon name="expand" />
+									<Icon name="undo" />
 								</button>
 								<button
 									class="fv__zoom-btn"
@@ -345,6 +394,22 @@
 									<Icon name="search-plus" />
 								</button>
 							</div>
+						{/if}
+						{#if canFullscreen && (kind === 'image' || kind === 'video')}
+							<button
+								class="fv__zoom-btn fv__fullscreen-btn"
+								data-testid="file-viewer-fullscreen-btn"
+								title={fullscreen
+									? t('viewer.exit_fullscreen', 'Exit full screen')
+									: t('viewer.fullscreen', 'Full screen')}
+								aria-label={fullscreen
+									? t('viewer.exit_fullscreen', 'Exit full screen')
+									: t('viewer.fullscreen', 'Full screen')}
+								aria-pressed={fullscreen}
+								onclick={toggleFullscreen}
+							>
+								<Icon name={fullscreen ? 'compress' : 'expand'} />
+							</button>
 						{/if}
 						{#if canEdit && !readOnly}
 							<button
@@ -602,6 +667,33 @@
 		box-shadow: 0 1px 3px var(--color-shadow-sm);
 		color: var(--color-text);
 		cursor: pointer;
+		transition: opacity 0.15s ease;
+	}
+
+	/* Fade only where there is a pointer to bring them back: a touch screen
+	   has no hover, so they stay up there. */
+	@media (hover: hover) {
+		.fv__nav {
+			opacity: 0;
+		}
+
+		.fv__panel--nav .fv__nav,
+		.fv__nav:hover,
+		.fv__nav:focus-visible {
+			opacity: 1;
+		}
+	}
+
+	.fv__panel:fullscreen {
+		border-radius: 0;
+	}
+
+	.fv__panel:fullscreen .fv__body {
+		background: var(--color-lightbox-overlay);
+	}
+
+	.fv__fullscreen-btn {
+		margin-right: 0.3rem;
 	}
 
 	.fv__nav--prev {
